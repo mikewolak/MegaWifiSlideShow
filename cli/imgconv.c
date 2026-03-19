@@ -621,6 +621,8 @@ static gen_color_t dither_pixel(gen_color_t pixel, int x, int y)
 enum dither_mode { DITHER_NONE, DITHER_BAYER, DITHER_FS };
 static enum dither_mode g_dither = DITHER_FS;  /* default */
 static int g_dual_layer = 0;  /* -2 flag: use BG_A + BG_B */
+static int g_crop_fill = 0;   /* -c flag: crop to fill screen */
+static char g_gravity = 'c';  /* -g flag: crop gravity (t/b/l/r/c) */
 
 /* ══════════════════════════════════════════════════════════════════
  *  Per-tile palette selection + pixel mapping
@@ -1378,37 +1380,70 @@ static int process_image(const char *input, const char *out_png,
     /* ── Resize to 320×224 preserving aspect ratio ── */
     t0 = usec_now();
 
-    /* Fit source into SCREEN_W × SCREEN_H, letterbox/pillarbox as needed */
     double scale_w = (double)SCREEN_W / src_w;
     double scale_h = (double)SCREEN_H / src_h;
-    double scale   = (scale_w < scale_h) ? scale_w : scale_h;
-    int fit_w = (int)(src_w * scale + 0.5);
-    int fit_h = (int)(src_h * scale + 0.5);
-    if (fit_w > SCREEN_W) fit_w = SCREEN_W;
-    if (fit_h > SCREEN_H) fit_h = SCREEN_H;
+    uint8_t *resized;
 
-    int off_x = (SCREEN_W - fit_w) / 2;
-    int off_y = (SCREEN_H - fit_h) / 2;
+    if (g_crop_fill) {
+        /* Crop-to-fill: scale up to cover entire screen, crop overflow */
+        double scale = (scale_w > scale_h) ? scale_w : scale_h;
+        int sc_w = (int)(src_w * scale + 0.5);
+        int sc_h = (int)(src_h * scale + 0.5);
+        if (sc_w < SCREEN_W) sc_w = SCREEN_W;
+        if (sc_h < SCREEN_H) sc_h = SCREEN_H;
 
-    uint8_t *fitted = resize_rgb(src_rgb, src_w, src_h, fit_w, fit_h);
-    stbi_image_free(src_rgb);
+        uint8_t *scaled = resize_rgb(src_rgb, src_w, src_h, sc_w, sc_h);
+        stbi_image_free(src_rgb);
 
-    /* Place on black canvas */
-    uint8_t *resized = calloc(SCREEN_W * SCREEN_H * 3, 1);
-    for (int y = 0; y < fit_h; y++)
-        memcpy(&resized[((off_y + y) * SCREEN_W + off_x) * 3],
-               &fitted[y * fit_w * 3],
-               fit_w * 3);
-    free(fitted);
+        /* Crop position based on gravity */
+        int crop_x, crop_y;
+        switch (g_gravity) {
+        case 't': crop_x = (sc_w - SCREEN_W) / 2; crop_y = 0; break;
+        case 'b': crop_x = (sc_w - SCREEN_W) / 2; crop_y = sc_h - SCREEN_H; break;
+        case 'l': crop_x = 0; crop_y = (sc_h - SCREEN_H) / 2; break;
+        case 'r': crop_x = sc_w - SCREEN_W; crop_y = (sc_h - SCREEN_H) / 2; break;
+        default:  crop_x = (sc_w - SCREEN_W) / 2; crop_y = (sc_h - SCREEN_H) / 2; break;
+        }
+        resized = calloc(SCREEN_W * SCREEN_H * 3, 1);
+        for (int y = 0; y < SCREEN_H; y++)
+            memcpy(&resized[y * SCREEN_W * 3],
+                   &scaled[((crop_y + y) * sc_w + crop_x) * 3],
+                   SCREEN_W * 3);
+        free(scaled);
 
-    t1 = usec_now();
-    if (fit_w == SCREEN_W && fit_h == SCREEN_H)
-        fprintf(stderr, "Resize: %dx%d → %dx%d  (%.3f ms)\n",
-                src_w, src_h, SCREEN_W, SCREEN_H, (t1-t0)/1000.0);
-    else
-        fprintf(stderr, "Resize: %dx%d → %dx%d (centered %dx%d, %s)  (%.3f ms)\n",
-                src_w, src_h, SCREEN_W, SCREEN_H, fit_w, fit_h,
-                (off_x > 0) ? "pillarbox" : "letterbox", (t1-t0)/1000.0);
+        t1 = usec_now();
+        fprintf(stderr, "Resize: %dx%d → %dx%d (crop-to-fill, scaled %dx%d)  (%.3f ms)\n",
+                src_w, src_h, SCREEN_W, SCREEN_H, sc_w, sc_h, (t1-t0)/1000.0);
+    } else {
+        /* Fit: letterbox/pillarbox to preserve full image */
+        double scale = (scale_w < scale_h) ? scale_w : scale_h;
+        int fit_w = (int)(src_w * scale + 0.5);
+        int fit_h = (int)(src_h * scale + 0.5);
+        if (fit_w > SCREEN_W) fit_w = SCREEN_W;
+        if (fit_h > SCREEN_H) fit_h = SCREEN_H;
+
+        int off_x = (SCREEN_W - fit_w) / 2;
+        int off_y = (SCREEN_H - fit_h) / 2;
+
+        uint8_t *fitted = resize_rgb(src_rgb, src_w, src_h, fit_w, fit_h);
+        stbi_image_free(src_rgb);
+
+        resized = calloc(SCREEN_W * SCREEN_H * 3, 1);
+        for (int y = 0; y < fit_h; y++)
+            memcpy(&resized[((off_y + y) * SCREEN_W + off_x) * 3],
+                   &fitted[y * fit_w * 3],
+                   fit_w * 3);
+        free(fitted);
+
+        t1 = usec_now();
+        if (fit_w == SCREEN_W && fit_h == SCREEN_H)
+            fprintf(stderr, "Resize: %dx%d → %dx%d  (%.3f ms)\n",
+                    src_w, src_h, SCREEN_W, SCREEN_H, (t1-t0)/1000.0);
+        else
+            fprintf(stderr, "Resize: %dx%d → %dx%d (centered %dx%d, %s)  (%.3f ms)\n",
+                    src_w, src_h, SCREEN_W, SCREEN_H, fit_w, fit_h,
+                    (off_x > 0) ? "pillarbox" : "letterbox", (t1-t0)/1000.0);
+    }
 
     /* ── Quantize to Genesis 9-bit color space ── */
     t0 = usec_now();
@@ -1766,7 +1801,9 @@ static void usage(const char *prog)
         "  -d MODE   Dither: fs (default), bayer, none\n"
         "  -s DIR    Slideshow: loop images in DIR (Ctrl-C to stop)\n"
         "  -t SECS   Slideshow delay between frames (default: 10)\n"
-        "  -2        Dual-layer mode: use BG_A + BG_B for 30 colors/tile\n",
+        "  -2        Dual-layer mode: use BG_A + BG_B for 30 colors/tile\n"
+        "  -c        Crop-to-fill: scale up and crop (no black borders)\n"
+        "  -g GRAV   Crop gravity: t(op), b(ottom), l(eft), r(ight), c(enter) [default: t]\n",
         prog, prog, prog);
 }
 
@@ -1780,7 +1817,7 @@ int main(int argc, char *argv[])
     int slide_delay = 10;
 
     int opt;
-    while ((opt = getopt(argc, argv, "o:b:H:p:d:s:t:2h")) != -1) {
+    while ((opt = getopt(argc, argv, "o:b:H:p:d:s:t:g:2ch")) != -1) {
         switch (opt) {
         case 'o': out_png = optarg; break;
         case 'b': out_bin = optarg; break;
@@ -1796,6 +1833,14 @@ int main(int argc, char *argv[])
                    usage(argv[0]); return 1; }
             break;
         case '2': g_dual_layer = 1; break;
+        case 'c': g_crop_fill = 1; break;
+        case 'g':
+            if (optarg[0] == 't' || optarg[0] == 'b' || optarg[0] == 'l' ||
+                optarg[0] == 'r' || optarg[0] == 'c')
+                g_gravity = optarg[0];
+            else { fprintf(stderr, "Unknown gravity: %s (use t/b/l/r/c)\n", optarg);
+                   usage(argv[0]); return 1; }
+            break;
         case 'h': usage(argv[0]); return 0;
         default:  usage(argv[0]); return 1;
         }
