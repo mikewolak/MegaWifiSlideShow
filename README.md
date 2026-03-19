@@ -89,6 +89,12 @@ Convert and display one image on the Genesis:
 # Dual-layer mode for more colors per tile
 ./imgconv image.png -H 192.168.1.199 -2
 
+# Crop-to-fill: no black borders, crops overflow from bottom
+./imgconv image.png -H 192.168.1.199 -c
+
+# Crop-to-fill with gravity control (keep bottom, crop top)
+./imgconv image.png -H 192.168.1.199 -c -g b
+
 # Save a preview PNG (Genesis-accurate rendering, no hardware needed)
 ./imgconv image.png -o preview.png
 
@@ -141,6 +147,8 @@ Options:
   -s DIR    Slideshow: loop images in DIR (Ctrl-C to stop)
   -t SECS   Slideshow delay between frames (default: 10)
   -2        Dual-layer mode: use BG_A + BG_B for 30 colors/tile
+  -c        Crop-to-fill: scale up and crop (no black borders)
+  -g GRAV   Crop gravity: t(op), b(ottom), l(eft), r(ight), c(enter) [default: t]
 ```
 
 ## How It Works
@@ -148,7 +156,7 @@ Options:
 ### Color Pipeline
 
 1. **Load** any image format via stb_image
-2. **Resize** to fit 320x224 with aspect ratio preservation (letterbox/pillarbox)
+2. **Resize** to fit 320x224 — letterbox/pillarbox to preserve full image, or crop-to-fill (`-c`) with configurable gravity (`-g`)
 3. **Quantize** to Genesis 9-bit color space (3 bits per channel = 512 possible colors)
 4. **Select** top 60 colors by pixel frequency
 5. **Cluster** tiles into 4 groups by luminance using k-means (black border tiles excluded from clustering)
